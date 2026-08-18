@@ -15,8 +15,8 @@
 
 程序未进行商业代码签名，Windows 首次运行可能显示 SmartScreen 提示。确认文件来源后，可选择“更多信息 → 仍要运行”。
 
-## 发给朋友
+## 分享
 
-将便携版 EXE 放进 ZIP 后发送即可。朋友解压并双击运行，不需要 Node.js、Blender、DSH 或其他运行库。
+将便携版 EXE 放进 ZIP 后发送即可。接收后解压并双击运行，不需要 Node.js、Blender、DSH 或其他运行库。
 
 也可以直接从本项目的 [Releases](https://github.com/zdjmrq/rabbit-desktop-pet/releases) 下载最新版。
