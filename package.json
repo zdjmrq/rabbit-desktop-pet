@@ -1,7 +1,7 @@
 {
-  "name": "dsh-rabbit-desktop-pet",
-  "version": "1.0.0",
-  "description": "Standalone Windows desktop edition of the DSH realistic rabbit pet",
+  "name": "rabbit-desktop-pet",
+  "version": "1.1.0",
+  "description": "Photorealistic rabbit desktop pet for Windows and macOS",
   "homepage": "https://github.com/zdjmrq/rabbit-desktop-pet",
   "repository": {
     "type": "git",
@@ -15,7 +15,8 @@
     "check": "tsc --noEmit",
     "start": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke-test",
-    "dist": "npm run check && npm run build && electron-builder --win portable --x64"
+    "dist": "npm run check && npm run build && electron-builder --win portable --x64",
+    "dist:mac": "npm run check && npm run build && electron-builder --mac zip --arm64"
   },
   "dependencies": {
     "three": "^0.179.1"
@@ -30,8 +31,7 @@
   "build": {
     "appId": "com.zdjmrq.rabbitpet",
     "productName": "写实小兔子桌宠",
-    "artifactName": "RabbitDesktopPet-${version}-portable.${ext}",
-    "electronDist": "node_modules/electron/dist",
+    "artifactName": "RabbitDesktopPet-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "directories": { "output": "release" },
     "files": [
@@ -43,6 +43,14 @@
       "package.json"
     ],
     "win": { "target": ["portable"] },
-    "portable": { "artifactName": "RabbitDesktopPet-${version}-portable.${ext}" }
+    "portable": { "artifactName": "RabbitDesktopPet-${version}-portable.${ext}" },
+    "mac": {
+      "target": [{ "target": "zip", "arch": ["arm64"] }],
+      "artifactName": "RabbitDesktopPet-${version}-mac-${arch}.${ext}",
+      "category": "public.app-category.entertainment",
+      "icon": "build/RabbitDesktopPet.icns",
+      "identity": null,
+      "hardenedRuntime": false
+    }
   }
 }

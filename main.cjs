@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, sc
 const path = require('node:path')
 
 const smokeTest = process.argv.includes('--smoke-test')
+const isMac = process.platform === 'darwin'
 let mainWindow = null
 let tray = null
 let quitting = false
@@ -46,11 +47,13 @@ function updateMouseHitTest() {
   const shouldIgnore = !petInteractionEnabled || (!pointerCaptured && !overInteractiveRegion)
   if (shouldIgnore === ignoringMouse) return
   ignoringMouse = shouldIgnore
-  mainWindow.setIgnoreMouseEvents(shouldIgnore, { forward: true })
+  if (isMac) mainWindow.setIgnoreMouseEvents(shouldIgnore)
+  else mainWindow.setIgnoreMouseEvents(shouldIgnore, { forward: true })
 }
 
 function createTray() {
-  const image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'rabbit-idle.png')).resize({ width: 32, height: 32 })
+  const traySize = isMac ? 20 : 32
+  const image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'rabbit-idle.png')).resize({ width: traySize, height: traySize })
   tray = new Tray(image)
   tray.setToolTip('写实小兔子桌宠')
   const refreshMenu = () => {
@@ -58,7 +61,7 @@ function createTray() {
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示小兔子', click: showPet },
       { label: '隐藏小兔子', click: () => mainWindow?.hide() },
-      { label: '快速隐藏/显示（Ctrl+Alt+R）', click: togglePet },
+      { label: `快速隐藏/显示（${isMac ? '⌘+⌥+R' : 'Ctrl+Alt+R'}）`, click: togglePet },
       {
         label: '允许鼠标与小兔子互动',
         type: 'checkbox',
@@ -76,7 +79,9 @@ function createTray() {
         type: 'checkbox',
         checked: autoStart,
         click: (item) => {
-          app.setLoginItemSettings({ openAtLogin: item.checked, path: process.execPath })
+          app.setLoginItemSettings(isMac
+            ? { openAtLogin: item.checked }
+            : { openAtLogin: item.checked, path: process.execPath })
           refreshMenu()
         },
       },
@@ -151,6 +156,7 @@ ipcMain.on('desktop-pet:set-interactive-regions', (_event, regions, capture) => 
 ipcMain.on('desktop-pet:quit', () => { quitting = true; app.quit() })
 
 app.whenReady().then(() => {
+  if (isMac) app.dock?.hide()
   createWindow()
   if (!smokeTest) {
     createTray()

@@ -1,0 +1,70 @@
+name: Build macOS Apple Silicon
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build rabbit app icon
+        run: bash scripts/build-macos-icon.sh
+
+      - name: Build unsigned Apple Silicon app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:mac
+
+      - name: Verify Apple Silicon package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find release -maxdepth 1 -name 'RabbitDesktopPet-*-mac-arm64.zip' -print -quit)"
+          test -n "$package"
+          mkdir -p verify-macos
+          ditto -x -k "$package" verify-macos
+          app="$(find verify-macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          lipo -archs "$app/Contents/MacOS/$executable" | grep -qw arm64
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RabbitDesktopPet-mac-arm64
+          path: release/RabbitDesktopPet-*-mac-arm64.zip
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find release -maxdepth 1 -name 'RabbitDesktopPet-*-mac-arm64.zip' -print -quit)"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$package#Apple Silicon Mac ZIP" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$package#Apple Silicon Mac ZIP" \
+              --title "写实小兔子桌宠 $GITHUB_REF_NAME" \
+              --notes "首个 Apple Silicon Mac 版本，适用于 M1、M2、M3、M4 及后续芯片。该测试版尚未进行 Apple Developer 签名；首次启动请在 Finder 中右键应用并选择打开。"
+          fi
