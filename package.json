@@ -16,7 +16,7 @@
     "start": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke-test",
     "dist": "npm run check && npm run build && electron-builder --win portable --x64",
-    "dist:mac": "npm run check && npm run build && electron-builder --mac zip --arm64"
+    "dist:mac": "npm run check && npm run build && electron-builder --mac zip --arm64 --publish never"
   },
   "dependencies": {
     "three": "^0.179.1"

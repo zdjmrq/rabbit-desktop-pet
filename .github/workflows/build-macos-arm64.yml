@@ -14,10 +14,10 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -47,7 +47,7 @@ jobs:
           lipo -archs "$app/Contents/MacOS/$executable" | grep -qw arm64
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: RabbitDesktopPet-mac-arm64
           path: release/RabbitDesktopPet-*-mac-arm64.zip
