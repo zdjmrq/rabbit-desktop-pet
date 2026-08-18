@@ -1,0 +1,48 @@
+{
+  "name": "dsh-rabbit-desktop-pet",
+  "version": "1.0.0",
+  "description": "Standalone Windows desktop edition of the DSH realistic rabbit pet",
+  "homepage": "https://github.com/zdjmrq/rabbit-desktop-pet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zdjmrq/rabbit-desktop-pet.git"
+  },
+  "private": true,
+  "type": "module",
+  "main": "main.cjs",
+  "scripts": {
+    "build": "tsdown",
+    "check": "tsc --noEmit",
+    "start": "npm run build && electron .",
+    "smoke": "npm run build && electron . --smoke-test",
+    "dist": "npm run check && npm run build && electron-builder --win portable --x64"
+  },
+  "dependencies": {
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.179.0",
+    "electron": "42.9.0",
+    "electron-builder": "^26.0.12",
+    "tsdown": "^0.15.7",
+    "typescript": "^5.9.2"
+  },
+  "build": {
+    "appId": "com.zdjmrq.rabbitpet",
+    "productName": "写实小兔子桌宠",
+    "artifactName": "RabbitDesktopPet-${version}-portable.${ext}",
+    "electronDist": "node_modules/electron/dist",
+    "asar": true,
+    "directories": { "output": "release" },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "index.html",
+      "dist/renderer.js",
+      "assets/rabbit-idle.png",
+      "package.json"
+    ],
+    "win": { "target": ["portable"] },
+    "portable": { "artifactName": "RabbitDesktopPet-${version}-portable.${ext}" }
+  }
+}
