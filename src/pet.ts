@@ -1,10 +1,7 @@
-import * as THREE from 'three'
-import rabbitIdle from '../assets/rabbit-idle.png'
-import rabbitSleep from '../assets/rabbit-sleep.png'
-import rabbitEat from '../assets/rabbit-eat.png'
-import rabbitIdleNoHat from '../assets/rabbit-idle-nohat.png'
-import rabbitSleepNoHat from '../assets/rabbit-sleep-nohat.png'
-import rabbitEatNoHat from '../assets/rabbit-eat-nohat.png'
+import { SpritePet, actionDurationMs, maxPetLift } from './sprite'
+import rabbitIdle from '../assets/rabbit-idle-nohat.png'
+import rabbitSleep from '../assets/rabbit-sleep-nohat.png'
+import rabbitEat from '../assets/rabbit-eat-nohat.png'
 import carrotRealistic from '../assets/carrot-realistic.png'
 import handPetSideCute from '../assets/hand-pet-side-cute.png'
 import handCarryCute from '../assets/hand-carry-cute.png'
@@ -14,17 +11,13 @@ interface ClientContext {
 }
 
 type Action = 'idle' | 'walk' | 'hop' | 'groom' | 'stretch' | 'look' | 'sleep' | 'eat' | 'spin' | 'pet' | 'carry'
-type Pose = 'idle' | 'sleep' | 'eat'
-type TextureKey = Pose | `${Pose}-nohat`
 
 const PLUGIN_ID = 'dsh-rabbit-pet'
 const STORAGE_KEY = 'dsh-rabbit-pet:v1'
-const STAGE_HEIGHT = 250
+const STAGE_HEIGHT = 300
 const FLOOR_Y = 34
-const MODEL_SCALE = 1.25
 const PHOTO_WIDTH = 250
-const PHOTO_HEIGHT = 188
-const CARRY_HAND_OFFSET = 104
+const PHOTO_HEIGHT = 260
 
 const STYLE = `
   #dsh-rabbit-pet-stage{position:fixed;left:0;right:0;bottom:0;height:${STAGE_HEIGHT}px;z-index:2147482000;pointer-events:none;overflow:visible}
@@ -61,44 +54,18 @@ const STYLE = `
 
 interface SavedState {
   xRatio: number
-  hat?: boolean
-}
-
-interface Parts {
-  body: THREE.Group
-  head: THREE.Group
-  leftEar: THREE.Group
-  rightEar: THREE.Group
-  frontPaw: THREE.Mesh
-  backPaw: THREE.Mesh
-  tail: THREE.Mesh
-  hat: THREE.Group
-}
-
-function mesh(geometry: THREE.BufferGeometry, material: THREE.Material): THREE.Mesh {
-  const value = new THREE.Mesh(geometry, material)
-  value.castShadow = true
-  value.receiveShadow = true
-  return value
-}
-
-function setEllipsoid(target: THREE.Object3D, x: number, y: number, z: number): void {
-  target.scale.set(x, y, z)
+  quiet?: boolean
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
-function easeOutBack(value: number): number {
-  const c1 = 1.70158
-  const c3 = c1 + 1
-  return 1 + c3 * (value - 1) ** 3 + c1 * (value - 1) ** 2
-}
-
 class RabbitPet {
   private readonly root = document.createElement('div')
   private readonly canvas = document.createElement('canvas')
+  private readonly spriteCanvas = document.createElement('canvas')
+  private readonly sprite: SpritePet
   private readonly photo = document.createElement('div')
   private readonly photoInner = document.createElement('div')
   private readonly poseImages: Record<'idle' | 'sleep' | 'eat', HTMLImageElement>
@@ -109,18 +76,12 @@ class RabbitPet {
   private readonly hand = document.createElement('img')
   private readonly toast = document.createElement('div')
   private readonly style = document.createElement('style')
-  private readonly scene = new THREE.Scene()
-  private readonly camera = new THREE.OrthographicCamera(0, innerWidth, STAGE_HEIGHT, 0, 0.1, 1500)
-  private readonly renderer: THREE.WebGLRenderer
-  private readonly rabbit = new THREE.Group()
-  private readonly photoRig = new THREE.Group()
-  private photoMaterial!: THREE.ShaderMaterial
-  private photoMesh!: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>
-  private poseTextures!: Record<TextureKey, THREE.Texture>
-  private currentTextureKey: TextureKey | '' = ''
-  private readonly shadow: THREE.Mesh
-  private readonly parts: Parts
-  private carrot: THREE.Group | null = null
+  private carrot = false
+  private carryOffsetX = 0
+  private carryOffsetY = 0
+  private landingHeight = 0
+  private landingStart = 0
+  private speed = 0
   private carrotX = 0
   private carrotY = 7
   private carrotDown = false
@@ -134,24 +95,27 @@ class RabbitPet {
   private action: Action = 'idle'
   private actionStart = performance.now()
   private actionDuration = 0
-  private nextBehavior = performance.now() + 4500
+  private nextBehavior = performance.now() + 35000
   private frame = 0
   private lastFrame = performance.now()
+  private fpsSampleStart = performance.now()
+  private fpsFrames = 0
   private resizeObserver: ResizeObserver | null = null
+  private interactionPointerId: number | null = null
   private leftDown = false
   private rightDown = false
   private petTimer = 0
   private carryTimer = 0
   private rightPressAt = 0
-  private spinFlipped = false
   private heartAt = 0
   private menuOpen = false
-  private hatOn = true
+  private quiet = false
   private reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   private destroyed = false
 
   constructor() {
     this.root.id = 'dsh-rabbit-pet-stage'
+    this.root.dataset.action = this.action
     this.canvas.setAttribute('aria-hidden', 'true')
     this.photo.id = 'dsh-rabbit-pet-photo'
     this.photoInner.id = 'dsh-rabbit-pet-photo-inner'
@@ -191,7 +155,7 @@ class RabbitPet {
       '<button data-action="spin">↔️ 转个身</button>',
       '<button data-action="groom">🐾 梳理毛毛</button>',
       '<button data-action="look">👀 看看你</button>',
-      '<button data-action="hat" class="wide">👒 戴上 / 摘下草帽</button>',
+      '<button data-action="quiet" class="wide">🌙 开启安静模式</button>',
       '<button data-action="wake" class="wide">☀️ 醒醒，继续散步</button>',
     ].join('')
     this.hand.id = 'dsh-rabbit-pet-hand'
@@ -202,47 +166,19 @@ class RabbitPet {
     this.style.dataset.plugin = PLUGIN_ID
     this.style.textContent = STYLE
     document.head.appendChild(this.style)
-    this.root.append(this.canvas, this.photo, this.carrotPhoto, this.carrotHit, this.hit, this.menu, this.hand, this.toast)
+    this.root.append(this.canvas, this.spriteCanvas, this.photo, this.carrotPhoto, this.carrotHit, this.hit, this.menu, this.hand, this.toast)
     document.body.appendChild(this.root)
+    this.sprite = new SpritePet(this.spriteCanvas)
+    this.spriteCanvas.style.display = 'none'
+    this.spriteCanvas.style.filter = 'none'
 
-    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, alpha: true, antialias: true, powerPreference: 'high-performance' })
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
-    this.renderer.setSize(innerWidth, STAGE_HEIGHT, false)
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace
-    this.renderer.shadowMap.enabled = !this.reducedMotion
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    this.camera.position.set(0, 0, 700)
-    this.camera.lookAt(0, 0, 0)
-
-    const ambient = new THREE.HemisphereLight(0xfffbf3, 0x6f7b8c, 2.5)
-    this.scene.add(ambient)
-    const key = new THREE.DirectionalLight(0xffead5, 4.4)
-    key.position.set(-180, 280, 380)
-    key.castShadow = true
-    key.shadow.mapSize.set(1024, 1024)
-    key.shadow.camera.left = -220
-    key.shadow.camera.right = 220
-    key.shadow.camera.top = 240
-    key.shadow.camera.bottom = -80
-    this.scene.add(key)
-    const rim = new THREE.PointLight(0xb7d8ff, 2.2, 700)
-    rim.position.set(240, 180, 220)
-    this.scene.add(rim)
-
-    this.parts = this.buildRabbit()
-    this.rabbit.scale.setScalar(MODEL_SCALE)
-    this.rabbit.visible = false
-    this.scene.add(this.rabbit)
-    this.buildPhotoRig()
-    this.shadow = mesh(new THREE.PlaneGeometry(130, 44), new THREE.ShadowMaterial({ color: 0x26180f, opacity: 0.22 }))
-    this.shadow.rotation.x = Math.PI / 2
-    this.shadow.position.z = -30
-    this.scene.add(this.shadow)
     this.loadState()
+    this.root.dataset.quiet = String(this.quiet)
+    this.updateQuietMenu()
     this.bind()
     this.resize()
     this.frame = requestAnimationFrame(this.tick)
-    this.say('右键可以和我互动哦', 2400)
+    if (!this.quiet) this.say('右键可以和我互动哦', 2400)
   }
 
   dispose(): void {
@@ -254,285 +190,8 @@ class RabbitPet {
     clearInterval(this.carrotWatchTimer)
     this.resizeObserver?.disconnect()
     this.unbind()
-    this.scene.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return
-      object.geometry.dispose()
-      const materials = Array.isArray(object.material) ? object.material : [object.material]
-      for (const material of materials) material.dispose()
-    })
-    this.renderer.dispose()
-    for (const texture of Object.values(this.poseTextures)) texture.dispose()
     this.root.remove()
     this.style.remove()
-  }
-
-  private buildPhotoRig(): void {
-    const loader = new THREE.TextureLoader()
-    const load = (source: string): THREE.Texture => {
-      const texture = loader.load(source)
-      texture.colorSpace = THREE.SRGBColorSpace
-      texture.minFilter = THREE.LinearMipmapLinearFilter
-      texture.magFilter = THREE.LinearFilter
-      return texture
-    }
-    this.poseTextures = {
-      idle: load(rabbitIdle),
-      sleep: load(rabbitSleep),
-      eat: load(rabbitEat),
-      'idle-nohat': load(rabbitIdleNoHat),
-      'sleep-nohat': load(rabbitSleepNoHat),
-      'eat-nohat': load(rabbitEatNoHat),
-    }
-    this.photoMaterial = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      alphaTest: 0.015,
-      uniforms: {
-        uMap: { value: this.poseTextures.idle },
-        uTime: { value: 0 },
-        uMode: { value: 0 },
-        uProgress: { value: 0 },
-      },
-      vertexShader: `
-        varying vec2 vUv;
-        uniform float uTime;
-        uniform float uMode;
-        uniform float uProgress;
-        vec2 rotateAt(vec2 point, vec2 pivot, float angle) {
-          float c = cos(angle), s = sin(angle);
-          vec2 d = point - pivot;
-          return pivot + vec2(d.x*c-d.y*s, d.x*s+d.y*c);
-        }
-        void main() {
-          vUv = uv;
-          vec3 p = position;
-          float head = smoothstep(.52,.78,uv.x) * smoothstep(.28,.52,uv.y);
-          float ears = smoothstep(.58,.82,uv.y) * smoothstep(.38,.58,uv.x);
-          float frontLeg = smoothstep(.56,.76,uv.x) * (1.0-smoothstep(.23,.42,uv.y));
-          float hindLeg = (1.0-smoothstep(.22,.43,uv.x)) * (1.0-smoothstep(.22,.42,uv.y));
-          float chest = smoothstep(.42,.67,uv.x) * smoothstep(.18,.42,uv.y) * (1.0-smoothstep(.62,.78,uv.y));
-          float body = smoothstep(.10,.32,uv.x) * (1.0-smoothstep(.73,.92,uv.x)) * smoothstep(.16,.35,uv.y) * (1.0-smoothstep(.72,.88,uv.y));
-          float breath = sin(uTime*2.15)*.007;
-          p.y += body * breath * 85.0;
-          p.x += chest * breath * 28.0;
-          p.z += body * 8.0 + head * 5.0;
-
-          if (uMode > .5 && uMode < 1.5) {
-            float step = sin(uTime*9.2);
-            p.y += abs(step)*1.5;
-            p.y += frontLeg*step*5.0 - hindLeg*step*4.2;
-            p.x += frontLeg*step*2.6 + hindLeg*step*1.8;
-            vec2 h = rotateAt(p.xy, vec2(52.0,24.0), head*step*.018);
-            p.xy = mix(p.xy,h,head);
-            p.x += ears*sin(uTime*6.1)*1.8;
-          } else if (uMode > 1.5 && uMode < 2.5) {
-            float lift = sin(uProgress*3.14159265);
-            p.x *= 1.0 + sin(uProgress*6.2831853)*.025;
-            p.y *= 1.0 - sin(uProgress*6.2831853)*.035;
-            p.y += frontLeg*lift*7.0;
-            p.x -= hindLeg*lift*5.0;
-            p.y -= (1.0-lift)*smoothstep(.0,.16,abs(uProgress-.5))*.8;
-          } else if (uMode > 2.5 && uMode < 3.5) {
-            float rub = sin(uTime*12.0);
-            p.y += frontLeg*(10.0+rub*5.0);
-            p.x += frontLeg*(4.0-rub*2.0);
-            p.x -= head*3.0;
-            p.y -= head*4.0;
-            p.x += ears*rub*1.4;
-          } else if (uMode > 3.5 && uMode < 4.5) {
-            float stretch = sin(uProgress*3.14159265);
-            p.x += (uv.x-.35)*stretch*15.0;
-            p.y -= body*stretch*5.0;
-            p.x += frontLeg*stretch*9.0;
-          } else if (uMode > 4.5 && uMode < 5.5) {
-            float glance = sin(uTime*1.7);
-            vec2 h = rotateAt(p.xy, vec2(45.0,18.0), head*glance*.035);
-            p.xy = mix(p.xy,h,head);
-            p.x += ears*sin(uTime*2.4)*2.0;
-          } else if (uMode > 6.5 && uMode < 7.5) {
-            float nibble = sin(uTime*10.5);
-            p.y -= head*abs(nibble)*2.7;
-            p.x += head*nibble*1.5;
-            p.y += frontLeg*nibble*1.3;
-          } else if (uMode > 8.5 && uMode < 9.5) {
-            p.y -= head*3.0;
-            p.x += ears*sin(uTime*2.8)*1.5;
-            p.y += body*sin(uTime*2.8)*1.0;
-          } else if (uMode > 9.5) {
-            float sway = sin(uTime*2.25);
-            p.x += (uv.y-.45)*sway*5.0;
-            p.y -= frontLeg*3.5 + hindLeg*2.5;
-            p.x += ears*sway*2.2;
-          }
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(p,1.0);
-        }
-      `,
-      fragmentShader: `
-        varying vec2 vUv;
-        uniform sampler2D uMap;
-        void main() {
-          vec4 color = texture2D(uMap,vUv);
-          if (color.a < .012) discard;
-          float softDepth = 1.0 + (vUv.y-.42)*.035;
-          color.rgb *= softDepth;
-          gl_FragColor = color;
-        }
-      `,
-    })
-    const geometry = new THREE.PlaneGeometry(PHOTO_WIDTH, PHOTO_HEIGHT, 30, 22)
-    this.photoMesh = new THREE.Mesh(geometry, this.photoMaterial)
-    this.photoMesh.position.y = PHOTO_HEIGHT / 2 - 2
-    this.photoMesh.renderOrder = 2
-    this.photoRig.add(this.photoMesh)
-    this.scene.add(this.photoRig)
-  }
-
-  private buildRabbit(): Parts {
-    const furWhite = new THREE.MeshStandardMaterial({ color: 0xf8f3e9, roughness: 0.95, metalness: 0 })
-    const furCream = new THREE.MeshStandardMaterial({ color: 0xd7c9b2, roughness: 0.98 })
-    const furBrown = new THREE.MeshStandardMaterial({ color: 0x9b846b, roughness: 1 })
-    const innerEar = new THREE.MeshStandardMaterial({ color: 0xd5a49f, roughness: 0.9 })
-    const eye = new THREE.MeshPhysicalMaterial({ color: 0x100e0d, roughness: 0.12, clearcoat: 1 })
-    const shine = new THREE.MeshBasicMaterial({ color: 0xffffff })
-    const noseMat = new THREE.MeshStandardMaterial({ color: 0xca8f91, roughness: 0.7 })
-    const body = new THREE.Group()
-    const bodyBase = mesh(new THREE.SphereGeometry(1, 48, 32), furWhite)
-    setEllipsoid(bodyBase, 47, 31, 29)
-    bodyBase.position.set(-4, 34, 0)
-    body.add(bodyBase)
-    const saddle = mesh(new THREE.SphereGeometry(1, 44, 28, 0, Math.PI * 2, 0, Math.PI * 0.62), furBrown)
-    setEllipsoid(saddle, 42, 28, 28)
-    saddle.position.set(-9, 44, -1)
-    saddle.rotation.z = -0.08
-    body.add(saddle)
-    const chest = mesh(new THREE.SphereGeometry(1, 36, 24), furWhite)
-    setEllipsoid(chest, 26, 33, 24)
-    chest.position.set(27, 39, 0)
-    chest.rotation.z = -0.16
-    body.add(chest)
-    this.rabbit.add(body)
-
-    const head = new THREE.Group()
-    head.position.set(34, 66, 0)
-    const headBase = mesh(new THREE.SphereGeometry(1, 48, 32), furCream)
-    setEllipsoid(headBase, 28, 28, 25)
-    head.add(headBase)
-    const faceBlaze = mesh(new THREE.SphereGeometry(1, 40, 28), furWhite)
-    setEllipsoid(faceBlaze, 22, 25, 22)
-    faceBlaze.position.set(10, -2, 7)
-    head.add(faceBlaze)
-    const cheekNear = mesh(new THREE.SphereGeometry(1, 36, 24), furWhite)
-    setEllipsoid(cheekNear, 20, 15, 16)
-    cheekNear.position.set(20, -11, 10)
-    head.add(cheekNear)
-    const cheekFar = cheekNear.clone()
-    cheekFar.position.z = -10
-    head.add(cheekFar)
-
-    const eyeGeometry = new THREE.SphereGeometry(1, 28, 20)
-    const nearEye = mesh(eyeGeometry, eye)
-    setEllipsoid(nearEye, 5.4, 7.2, 3.2)
-    nearEye.position.set(18, 7, 21)
-    head.add(nearEye)
-    const farEye = mesh(eyeGeometry, eye)
-    setEllipsoid(farEye, 4.8, 6.5, 3)
-    farEye.position.set(18, 8, -20)
-    head.add(farEye)
-    for (const target of [nearEye, farEye]) {
-      const glint = mesh(new THREE.SphereGeometry(1, 12, 8), shine)
-      setEllipsoid(glint, 1.4, 1.8, 0.8)
-      glint.position.set(1.7, 2.2, target === nearEye ? 2.6 : -2.6)
-      target.add(glint)
-    }
-    const nose = mesh(new THREE.SphereGeometry(1, 24, 16), noseMat)
-    setEllipsoid(nose, 5.2, 3.8, 4.2)
-    nose.position.set(39, -9, 0)
-    nose.rotation.z = -0.15
-    head.add(nose)
-
-    const whiskerMaterial = new THREE.LineBasicMaterial({ color: 0x8c8177, transparent: true, opacity: 0.64 })
-    const whiskerPoints: number[] = []
-    for (const z of [-1, 1]) {
-      for (let i = -1; i <= 1; i += 1) {
-        whiskerPoints.push(33, -10 + i * 4, z * 9, 67, -9 + i * 8, z * (16 + Math.abs(i) * 2))
-      }
-    }
-    const whiskers = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(whiskerPoints, 3)), whiskerMaterial)
-    head.add(whiskers)
-    this.rabbit.add(head)
-
-    const makeEar = (z: number, tilt: number): THREE.Group => {
-      const ear = new THREE.Group()
-      ear.position.set(18, 19, z)
-      ear.rotation.z = tilt
-      const outer = mesh(new THREE.CapsuleGeometry(8.7, 29, 8, 20), furCream)
-      outer.position.y = 20
-      setEllipsoid(outer, 1, 1, 0.72)
-      ear.add(outer)
-      const inner = mesh(new THREE.CapsuleGeometry(4.4, 24, 8, 18), innerEar)
-      inner.position.set(1, 20, z > 0 ? 6.3 : -6.3)
-      setEllipsoid(inner, 1, 1, 0.3)
-      ear.add(inner)
-      head.add(ear)
-      return ear
-    }
-    const leftEar = makeEar(10, -0.08)
-    const rightEar = makeEar(-10, 0.12)
-
-    const pawGeometry = new THREE.SphereGeometry(1, 32, 20)
-    const frontPaw = mesh(pawGeometry, furWhite)
-    setEllipsoid(frontPaw, 18, 8, 13)
-    frontPaw.position.set(34, 11, 15)
-    frontPaw.rotation.z = -0.08
-    this.rabbit.add(frontPaw)
-    const backPaw = mesh(pawGeometry, furCream)
-    setEllipsoid(backPaw, 24, 11, 17)
-    backPaw.position.set(-31, 12, 10)
-    backPaw.rotation.z = 0.05
-    this.rabbit.add(backPaw)
-    const tail = mesh(new THREE.SphereGeometry(1, 30, 22), furWhite)
-    setEllipsoid(tail, 15, 15, 14)
-    tail.position.set(-48, 48, -3)
-    this.rabbit.add(tail)
-
-    const hat = this.buildHat()
-    hat.position.set(-9, 32, 1)
-    hat.rotation.z = -0.16
-    head.add(hat)
-    return { body, head, leftEar, rightEar, frontPaw, backPaw, tail, hat }
-  }
-
-  private buildHat(): THREE.Group {
-    const group = new THREE.Group()
-    const straw = new THREE.MeshStandardMaterial({ color: 0xd9ad5b, roughness: 0.92, side: THREE.DoubleSide })
-    const ribbon = new THREE.MeshStandardMaterial({ color: 0xb53632, roughness: 0.75 })
-    const brim = mesh(new THREE.CylinderGeometry(25, 27, 3.8, 48), straw)
-    setEllipsoid(brim, 1.18, 1, 0.82)
-    group.add(brim)
-    const crown = mesh(new THREE.CylinderGeometry(13, 17, 16, 40), straw)
-    crown.position.y = 9
-    group.add(crown)
-    const band = mesh(new THREE.CylinderGeometry(17.2, 17.2, 5, 40, 1, true), ribbon)
-    band.position.y = 4.5
-    group.add(band)
-    return group
-  }
-
-  private buildCarrot(): THREE.Group {
-    const group = new THREE.Group()
-    const orange = new THREE.MeshStandardMaterial({ color: 0xf18432, roughness: 0.82 })
-    const green = new THREE.MeshStandardMaterial({ color: 0x5d9652, roughness: 0.9, side: THREE.DoubleSide })
-    const root = mesh(new THREE.ConeGeometry(8, 34, 24), orange)
-    root.rotation.z = -0.18
-    root.position.y = 17
-    group.add(root)
-    for (let i = -1; i <= 1; i += 1) {
-      const leaf = mesh(new THREE.CapsuleGeometry(2.1, 13, 4, 8), green)
-      leaf.position.set(i * 4, 38, 0)
-      leaf.rotation.z = i * 0.36
-      group.add(leaf)
-    }
-    return group
   }
 
   private bind(): void {
@@ -567,15 +226,16 @@ class RabbitPet {
 
   private readonly onVisibility = (): void => {
     this.lastFrame = performance.now()
+    this.fpsSampleStart = this.lastFrame
+    this.fpsFrames = 0
   }
 
   private readonly resize = (): void => {
     const width = Math.max(320, window.innerWidth)
-    this.renderer.setSize(width, STAGE_HEIGHT, false)
-    this.camera.right = width
-    this.camera.updateProjectionMatrix()
+    this.sprite.resize()
     this.x = clamp(this.x, 125, width - 125)
     this.targetX = clamp(this.targetX, 125, width - 125)
+    this.y = clamp(this.y, FLOOR_Y, FLOOR_Y + maxPetLift(innerHeight))
     this.updateDomPositions()
   }
 
@@ -585,15 +245,27 @@ class RabbitPet {
     this.lastFrame = now
     if (!document.hidden) {
       this.update(now, delta)
-      this.renderer.render(this.scene, this.camera)
+      if (this.sprite.ready) {
+        this.canvas.style.display = 'none'
+        this.photo.style.display = 'none'
+        this.spriteCanvas.style.display = 'block'
+        this.sprite.render(this.action, this.direction, this.x, this.y, FLOOR_Y, now - this.actionStart, this.quiet)
+      } else {
+        this.photo.style.display = 'block'
+      }
+      this.fpsFrames += 1
+      if (now - this.fpsSampleStart >= 1000) {
+        this.root.dataset.renderFps = String(Math.round(this.fpsFrames * 1000 / (now - this.fpsSampleStart)))
+        this.fpsFrames = 0
+        this.fpsSampleStart = now
+      }
     }
     this.frame = requestAnimationFrame(this.tick)
   }
 
   private update(now: number, delta: number): void {
     const elapsed = (now - this.actionStart) / 1000
-    const phase = now / 1000
-    const protectedAction = this.action === 'sleep' || this.action === 'pet' || this.action === 'carry' || this.action === 'eat'
+    const protectedAction = this.action === 'sleep' || this.action === 'pet' || this.action === 'carry' || this.action === 'eat' || this.landingHeight > 0
 
     if (this.actionDuration > 0 && elapsed >= this.actionDuration && !protectedAction) this.setAction('idle')
     if (this.action === 'eat' && elapsed >= this.actionDuration) {
@@ -602,260 +274,87 @@ class RabbitPet {
       this.say('好吃！', 1200)
     }
 
-    if (!protectedAction && !this.reducedMotion) {
+    if (!protectedAction && !this.reducedMotion && (!this.quiet || this.carrot)) {
       const distance = this.targetX - this.x
       if (Math.abs(distance) > 3) {
         if (this.action === 'idle') this.setAction('walk')
         if (this.action === 'walk') {
           this.direction = Math.sign(distance) || this.direction
-          this.x += this.direction * Math.min(Math.abs(distance), delta * 46)
+          const desiredSpeed = Math.min(42, Math.sqrt(2 * 55 * Math.abs(distance)))
+          this.speed += (desiredSpeed - this.speed) * (1 - Math.exp(-delta * 5))
+          this.x += this.direction * Math.min(Math.abs(distance), delta * this.speed)
         }
       } else if (this.action === 'walk') {
         this.setAction('idle')
       }
     }
 
-    if (now >= this.nextBehavior && !protectedAction && !this.carrot) this.chooseBehavior(now)
-    this.animateModel(phase, elapsed)
-    this.animatePhotoRig(phase, elapsed)
-    this.rabbit.position.set(this.x, this.y, 0)
-    this.rabbit.scale.set(this.direction * MODEL_SCALE, MODEL_SCALE, MODEL_SCALE)
-    this.photoRig.position.set(this.x, this.y - FLOOR_Y, 4)
-    this.shadow.position.set(this.x, 3, -28)
-    this.shadow.scale.setScalar(this.action === 'hop' ? clamp(1 - Math.sin(Math.min(1, elapsed / this.actionDuration) * Math.PI) * 0.35, 0.65, 1) : 1)
+    if (!this.quiet && now >= this.nextBehavior && this.action === 'idle' && !this.carrot) this.chooseBehavior(now)
+    if (this.action !== 'walk') this.speed = 0
+    if (this.action !== 'carry') {
+      const progress = clamp((now - this.landingStart) / 650, 0, 1)
+      this.y = FLOOR_Y + this.landingHeight * (1 - progress * progress * (3 - 2 * progress))
+      if (progress >= 1) this.landingHeight = 0
+    }
+    if (this.carrot && this.action === 'eat') {
+      const remaining = clamp(1 - elapsed / this.actionDuration, 0.08, 1)
+      this.carrotPhoto.style.transform = `rotate(-8deg) scale(${remaining})`
+    }
     this.updateDomPositions()
   }
 
-  private animateModel(phase: number, elapsed: number): void {
-    const { body, head, leftEar, rightEar, frontPaw, backPaw, tail } = this.parts
-    body.rotation.set(0, 0, 0)
-    body.scale.set(1, 1, 1)
-    head.rotation.set(0, 0, 0)
-    head.position.set(34, 66, 0)
-    leftEar.rotation.set(0, 0, -0.08)
-    rightEar.rotation.set(0, 0, 0.12)
-    frontPaw.rotation.set(0, 0, -0.08)
-    backPaw.rotation.set(0, 0, 0.05)
-    setEllipsoid(tail, 15, 15, 14)
-    this.rabbit.rotation.set(0, 0, 0)
-    if (this.action !== 'carry') this.y = FLOOR_Y
-    if (this.carrot && this.action !== 'eat' && !this.carrotDragging) this.carrotPhoto.style.transform = ''
-
-    const breathe = Math.sin(phase * 2.6) * 0.018
-    body.scale.y += breathe
-    head.position.y += breathe * 14
-    leftEar.rotation.z += Math.sin(phase * 1.7) * 0.025
-    rightEar.rotation.z -= Math.sin(phase * 1.45) * 0.02
-
-    if (this.action === 'walk') {
-      const step = Math.sin(phase * 10)
-      this.y += Math.abs(step) * 3
-      body.rotation.z = step * 0.025
-      frontPaw.rotation.z = -0.08 + step * 0.34
-      backPaw.rotation.z = 0.05 - step * 0.27
-      head.rotation.z = -step * 0.025
-      return
-    }
-    if (this.action === 'hop') {
-      const progress = clamp(elapsed / this.actionDuration, 0, 1)
-      this.y += Math.sin(progress * Math.PI) * 55
-      body.rotation.z = Math.sin(progress * Math.PI) * -0.1
-      frontPaw.rotation.z = -0.72
-      backPaw.rotation.z = 0.42
-      return
-    }
-    if (this.action === 'groom') {
-      const rub = Math.sin(phase * 13)
-      head.rotation.z = -0.2 + rub * 0.05
-      head.position.y -= 7
-      frontPaw.position.set(42, 39 + rub * 4, 18)
-      frontPaw.rotation.z = -0.85 + rub * 0.16
-      return
-    }
-    frontPaw.position.set(34, 11, 15)
-    if (this.action === 'stretch') {
-      const progress = clamp(elapsed / this.actionDuration, 0, 1)
-      const amount = Math.sin(progress * Math.PI)
-      body.scale.x = 1 + amount * 0.28
-      body.scale.y = 1 - amount * 0.12
-      head.position.x += amount * 14
-      head.position.y -= amount * 9
-      frontPaw.position.x += amount * 16
-      return
-    }
-    if (this.action === 'look') {
-      head.rotation.y = Math.sin(phase * 2.2) * 0.26
-      head.rotation.z = Math.sin(phase * 1.4) * 0.08
-      leftEar.rotation.z -= 0.11
-      rightEar.rotation.z += 0.12
-      return
-    }
-    if (this.action === 'spin') {
-      const progress = clamp(elapsed / this.actionDuration, 0, 1)
-      this.y += Math.sin(progress * Math.PI) * 12
-      return
-    }
-    if (this.action === 'sleep') {
-      body.rotation.z = -0.06
-      body.scale.y = 0.88
-      head.position.set(39, 42, 12)
-      head.rotation.z = -0.42
-      leftEar.rotation.z = -1.13
-      rightEar.rotation.z = -0.92
-      frontPaw.position.set(48, 12, 16)
-      return
-    }
-    if (this.action === 'eat') {
-      head.position.x += 9
-      head.position.y = 40 + Math.abs(Math.sin(phase * 7)) * 7
-      head.rotation.z = -0.54 + Math.sin(phase * 7) * 0.07
-      frontPaw.rotation.z = -0.36
-      if (this.carrot) {
-        const remaining = clamp(1 - elapsed / this.actionDuration, 0.08, 1)
-        this.carrot.scale.setScalar(remaining)
-        this.carrotPhoto.style.transform = `rotate(-8deg) scale(${remaining})`
-      }
-      return
-    }
-    if (this.action === 'pet') {
-      head.rotation.z = -0.16 + Math.sin(phase * 3) * 0.045
-      head.position.y -= 5
-      leftEar.rotation.z = -0.42
-      rightEar.rotation.z = -0.25
-      tail.scale.multiplyScalar(1 + Math.sin(phase * 11) * 0.08)
-      return
-    }
-    if (this.action === 'carry') {
-      body.rotation.z = Math.sin(phase * 2.8) * 0.035
-      frontPaw.rotation.z = -0.72 + Math.sin(phase * 5) * 0.1
-      backPaw.rotation.z = 0.48 - Math.sin(phase * 5) * 0.08
-      leftEar.rotation.z = -0.36
-      rightEar.rotation.z = 0.37
-    }
-  }
-
-  private animatePhoto(phase: number, elapsed: number): void {
-    const pose: 'idle' | 'sleep' | 'eat' = this.action === 'sleep' ? 'sleep' : this.action === 'eat' ? 'eat' : 'idle'
-    for (const [name, image] of Object.entries(this.poseImages)) image.classList.toggle('active', name === pose)
-
-    let translateY = 0
-    let rotate = 0
-    let scaleX = 1
-    let scaleY = 1 + Math.sin(phase * 2.15) * 0.006
-
-    if (this.action === 'walk') {
-      const step = Math.sin(phase * 8.4)
-      translateY = Math.abs(step) * -1.8
-      rotate = step * 0.7
-      scaleY += Math.abs(step) * 0.008
-    } else if (this.action === 'hop') {
-      const progress = clamp(elapsed / Math.max(this.actionDuration, 0.01), 0, 1)
-      const lift = Math.sin(progress * Math.PI)
-      rotate = -lift * 4.2
-      scaleX += Math.sin(progress * Math.PI * 2) * 0.025
-      scaleY -= Math.sin(progress * Math.PI * 2) * 0.02
-    } else if (this.action === 'groom') {
-      rotate = -2.1 + Math.sin(phase * 7.5) * 1.1
-      translateY = Math.abs(Math.sin(phase * 7.5)) * 2
-    } else if (this.action === 'stretch') {
-      const amount = Math.sin(clamp(elapsed / Math.max(this.actionDuration, 0.01), 0, 1) * Math.PI)
-      scaleX += amount * 0.075
-      scaleY -= amount * 0.055
-      rotate = -amount * 1.4
-    } else if (this.action === 'look') {
-      rotate = Math.sin(phase * 1.7) * 1.8
-      translateY = Math.sin(phase * 1.15) * 1.2
-    } else if (this.action === 'spin') {
-      const progress = clamp(elapsed / Math.max(this.actionDuration, 0.01), 0, 1)
-      scaleX = Math.cos(progress * Math.PI * 2)
-      scaleY += Math.sin(progress * Math.PI) * 0.035
-      translateY = -Math.sin(progress * Math.PI) * 7
-    } else if (this.action === 'sleep') {
-      scaleY = 1 + Math.sin(phase * 1.25) * 0.009
-      translateY = 4
-    } else if (this.action === 'eat') {
-      rotate = Math.sin(phase * 9.2) * 0.75
-      translateY = Math.abs(Math.sin(phase * 9.2)) * 2.2
-      scaleY += Math.sin(phase * 9.2) * 0.008
-    } else if (this.action === 'pet') {
-      rotate = -1.5 + Math.sin(phase * 2.8) * 0.65
-      translateY = 2 + Math.sin(phase * 2.8)
-      scaleY -= 0.018
-    } else if (this.action === 'carry') {
-      rotate = Math.sin(phase * 2.25) * 2.6
-      scaleX = 0.98
-      scaleY = 1.025
-    }
-
-    this.photo.style.transform = `scaleX(${this.direction})`
-    this.photoInner.style.transform = `translateY(${translateY}px) rotate(${rotate}deg) scale(${scaleX},${scaleY})`
-  }
-
-  private animatePhotoRig(phase: number, elapsed: number): void {
-    const pose: Pose = this.action === 'sleep' ? 'sleep' : this.action === 'eat' ? 'eat' : 'idle'
-    const textureKey: TextureKey = this.hatOn ? pose : `${pose}-nohat`
-    if (textureKey !== this.currentTextureKey) {
-      this.currentTextureKey = textureKey
-      this.photoMaterial.uniforms.uMap.value = this.poseTextures[textureKey]
-    }
-    const modes: Record<Action, number> = {
-      idle: 0, walk: 1, hop: 2, groom: 3, stretch: 4, look: 5,
-      sleep: 6, eat: 7, spin: 8, pet: 9, carry: 10,
-    }
-    const progress = this.actionDuration > 0 ? clamp(elapsed / this.actionDuration, 0, 1) : 0
-    this.photoMaterial.uniforms.uTime.value = phase
-    this.photoMaterial.uniforms.uMode.value = this.reducedMotion ? 0 : modes[this.action]
-    this.photoMaterial.uniforms.uProgress.value = progress
-    this.photoRig.scale.set(this.direction, 1, 1)
-    this.photoRig.rotation.set(0, 0, 0)
-    if (this.action === 'spin') {
-      if (progress >= 0.5 && !this.spinFlipped) {
-        this.direction *= -1
-        this.spinFlipped = true
-      }
-      const turn = Math.sin(progress * Math.PI)
-      this.photoRig.scale.set(this.direction * (1 - turn * 0.035), 1 - turn * 0.045, 1)
-      this.photoRig.rotation.z = Math.sin(progress * Math.PI * 2) * 0.025
-    }
-    if (this.action === 'carry') this.photoRig.rotation.z = Math.sin(phase * 2.25) * 0.035
-    if (this.action === 'walk') this.photoRig.rotation.z = Math.sin(phase * 9.2) * 0.008
-    if (this.action === 'look') this.photoRig.rotation.y = Math.sin(phase * 1.25) * 0.09
-  }
-
   private chooseBehavior(now: number): void {
-    this.nextBehavior = now + 6500 + Math.random() * 9000
+    this.nextBehavior = now + 35000 + Math.random() * 25000
     const roll = Math.random()
-    if (roll < 0.16 && !this.carrot) {
-      this.spawnCarrot(false)
-    } else if (roll < 0.34) {
-      this.setAction('hop', 1.05)
-    } else if (roll < 0.50) {
-      this.setAction('groom', 2.8)
-    } else if (roll < 0.64) {
-      this.setAction('stretch', 2.3)
-    } else if (roll < 0.78) {
-      this.setAction('look', 2.7)
-    } else if (roll < 0.87) {
-      this.sleep(5 + Math.random() * 5)
-    } else {
-      this.targetX = clamp(125 + Math.random() * (innerWidth - 250), 125, innerWidth - 125)
-    }
+    if (roll < 0.50) return
+    if (roll < 0.68) this.setAction('look', 2.2)
+    else if (roll < 0.82) this.setAction('groom', 2.3)
+    else if (roll < 0.91) this.setAction('stretch', 1.9)
+    else if (roll < 0.97) this.sleep(8 + Math.random() * 6)
+    else this.targetX = clamp(this.x + (Math.random() - 0.5) * 180, 125, innerWidth - 125)
   }
 
   private setAction(action: Action, duration = 0): void {
+    // The spin strip already turns right to left; commit facing only when leaving it.
+    if (this.action === 'spin' && action !== 'spin'
+      && performance.now() - this.actionStart >= actionDurationMs('spin') / 2) this.direction *= -1
+    if (action === this.action && ['groom', 'look', 'spin', 'stretch', 'hop'].includes(action)) return
+    const previous = this.action
     this.action = action
-    if (action === 'spin') this.spinFlipped = false
+    this.root.dataset.action = action
     this.actionStart = performance.now()
-    this.actionDuration = duration
+    // Session length and frame cadence are independent. One-shot clips stop on their own ending.
+    this.actionDuration = ['groom', 'look', 'spin', 'stretch', 'hop'].includes(action)
+      ? actionDurationMs(action) / 1000 : duration
+    if (action === 'idle' && previous !== 'idle') {
+      this.nextBehavior = this.actionStart + 35000 + Math.random() * 25000
+    }
     if (action !== 'sleep') this.hideToast()
+  }
+
+  private updateQuietMenu(): void {
+    const button = this.menu.querySelector<HTMLButtonElement>('[data-action="quiet"]')
+    if (button) button.textContent = this.quiet ? '☀️ 关闭安静模式' : '🌙 开启安静模式'
+  }
+
+  private setQuiet(enabled: boolean): void {
+    this.quiet = enabled
+    this.root.dataset.quiet = String(enabled)
+    this.targetX = this.x
+    this.nextBehavior = performance.now() + 35000 + Math.random() * 25000
+    if (enabled && !['sleep', 'pet', 'carry', 'eat'].includes(this.action)) this.setAction('idle')
+    this.updateQuietMenu()
+    this.saveState()
+    this.say(enabled ? '安静陪着你' : '可以活动啦', 1200)
   }
 
   private sleep(duration = 0): void {
     this.setAction('sleep', duration)
     this.say('Z z z…', duration > 0 ? duration * 1000 : 0)
     if (duration > 0) {
+      const started = this.actionStart
       window.setTimeout(() => {
-        if (this.action === 'sleep') this.setAction('idle')
+        if (this.action === 'sleep' && this.actionStart === started) this.setAction('idle')
       }, duration * 1000)
     }
   }
@@ -863,25 +362,13 @@ class RabbitPet {
   private spawnCarrot(userInitiated: boolean): void {
     this.removeCarrot()
     if (this.action === 'sleep') this.setAction('idle')
-    this.nextBehavior = performance.now() + 9000
-    this.carrot = this.buildCarrot()
-    this.carrot.visible = false
+    this.nextBehavior = performance.now() + 35000
+    this.carrot = true
     const offset = (Math.random() > 0.5 ? 1 : -1) * (105 + Math.random() * 90)
     this.carrotX = clamp(this.x + offset, 58, innerWidth - 58)
     this.carrotY = 7
-    this.carrot.position.set(this.carrotX, 7, 0)
-    this.carrot.scale.setScalar(0.01)
-    this.scene.add(this.carrot)
     this.carrotPhoto.classList.add('show')
     this.carrotHit.classList.add('show')
-    const born = performance.now()
-    const grow = (): void => {
-      if (!this.carrot) return
-      const progress = clamp((performance.now() - born) / 330, 0, 1)
-      this.carrot.scale.setScalar(easeOutBack(progress))
-      if (progress < 1) requestAnimationFrame(grow)
-    }
-    requestAnimationFrame(grow)
     const approach = this.carrotX >= this.x ? this.carrotX - 82 : this.carrotX + 82
     this.targetX = clamp(approach, 125, innerWidth - 125)
     if (userInitiated) this.say('闻到胡萝卜啦！', 1400)
@@ -892,14 +379,7 @@ class RabbitPet {
     clearInterval(this.carrotWatchTimer)
     this.carrotWatchTimer = 0
     if (!this.carrot) return
-    this.scene.remove(this.carrot)
-    this.carrot.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return
-      object.geometry.dispose()
-      const materials = Array.isArray(object.material) ? object.material : [object.material]
-      for (const material of materials) material.dispose()
-    })
-    this.carrot = null
+    this.carrot = false
     this.carrotDown = false
     this.carrotDragging = false
     clearTimeout(this.carrotDragTimer)
@@ -940,6 +420,7 @@ class RabbitPet {
 
   private readonly onCarrotPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || !this.carrot) return
+    this.interactionPointerId = event.pointerId
     event.preventDefault()
     event.stopPropagation()
     this.carrotDown = true
@@ -961,7 +442,6 @@ class RabbitPet {
   private moveCarrot(event: PointerEvent): void {
     this.carrotX = clamp(event.clientX, 38, innerWidth - 38)
     this.carrotY = clamp(innerHeight - event.clientY - 44, 8, STAGE_HEIGHT - 76)
-    this.carrot?.position.set(this.carrotX, this.carrotY, 0)
     this.retargetCarrot()
     this.updateDomPositions()
   }
@@ -972,7 +452,6 @@ class RabbitPet {
     if (!this.carrotDragging) return
     this.carrotDragging = false
     this.carrotY = 7
-    this.carrot?.position.set(this.carrotX, this.carrotY, 0)
     this.carrotPhoto.classList.remove('dragging')
     this.carrotHit.classList.remove('dragging')
     this.retargetCarrot()
@@ -981,6 +460,7 @@ class RabbitPet {
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
+    this.interactionPointerId = event.pointerId
     this.closeMenu()
     if (event.button === 0) {
       this.leftDown = true
@@ -1007,6 +487,7 @@ class RabbitPet {
   }
 
   private readonly onPointerMove = (event: PointerEvent): void => {
+    if (this.interactionPointerId !== event.pointerId) return
     if (this.carrotDragging) {
       event.preventDefault()
       this.moveCarrot(event)
@@ -1021,14 +502,26 @@ class RabbitPet {
       }
     } else if (this.action === 'carry') {
       event.preventDefault()
-      this.x = clamp(event.clientX, 125, innerWidth - 125)
-      this.y = clamp(innerHeight - event.clientY - 75, FLOOR_Y + 18, STAGE_HEIGHT - 106)
+      this.x = clamp(event.clientX + this.carryOffsetX, 125, innerWidth - 125)
+      this.y = FLOOR_Y + clamp(innerHeight - event.clientY + this.carryOffsetY, 0, maxPetLift(innerHeight))
       this.targetX = this.x
-      this.moveHand(event.clientX, event.clientY - CARRY_HAND_OFFSET)
+      this.positionCarryHand()
     }
   }
 
   private readonly onPointerUp = (event: PointerEvent): void => {
+    if (this.interactionPointerId !== event.pointerId) return
+    if (event.type === 'pointercancel') {
+      this.leftDown = false
+      this.rightDown = false
+      if (this.carrotDown) this.finishCarrotDrag()
+      if (this.action === 'carry') this.endCarry()
+      if (this.action === 'pet') this.endTouch('')
+      clearTimeout(this.petTimer)
+      clearTimeout(this.carryTimer)
+      this.interactionPointerId = null
+      return
+    }
     if (event.button === 0 && this.carrotDown) this.finishCarrotDrag()
     if (event.button === 0) this.leftDown = false
     const wasCarry = this.action === 'carry'
@@ -1051,26 +544,34 @@ class RabbitPet {
 
   private startCarry(x: number, y: number): void {
     if (this.action === 'pet') this.hand.className = ''
+    this.carryOffsetX = this.x - x
+    this.carryOffsetY = this.y - FLOOR_Y - (innerHeight - y)
+    this.landingHeight = 0
     this.setAction('carry')
     this.hand.src = handCarryCute
     this.hand.className = 'carry'
-    this.moveHand(x, y - CARRY_HAND_OFFSET)
+    this.positionCarryHand()
     this.say('轻一点呀！', 1100)
   }
 
   private endTouch(message: string): void {
     this.hand.className = ''
     this.setAction('idle')
-    this.say(message, 1100)
+    if (message) this.say(message, 1100)
   }
 
   private endCarry(): void {
     this.hand.className = ''
-    this.y = FLOOR_Y
-    this.setAction('hop', 0.72)
+    this.landingHeight = this.y - FLOOR_Y
+    this.landingStart = performance.now()
+    this.setAction('idle')
     this.targetX = this.x
     this.saveState()
-    this.say('放稳啦', 900)
+    this.hideToast()
+  }
+
+  private positionCarryHand(): void {
+    this.moveHand(this.x, Math.max(32, innerHeight - (this.y - FLOOR_Y) - 190))
   }
 
   private moveHand(x: number, y: number): void {
@@ -1127,15 +628,10 @@ class RabbitPet {
     if (action === 'look') this.setAction('look', 3.2)
     if (action === 'wake') {
       this.setAction('idle')
-      this.targetX = clamp(this.x + this.direction * 180, 125, innerWidth - 125)
+      this.targetX = this.quiet ? this.x : clamp(this.x + this.direction * 90, 125, innerWidth - 125)
       this.say('醒啦！', 900)
     }
-    if (action === 'hat') {
-      this.hatOn = !this.hatOn
-      this.currentTextureKey = ''
-      this.saveState()
-      this.say(this.hatOn ? '小草帽戴好啦 👒' : '先摘下来透透气', 1100)
-    }
+    if (action === 'quiet') this.setQuiet(!this.quiet)
   }
 
   private updateDomPositions(): void {
@@ -1152,7 +648,7 @@ class RabbitPet {
       this.carrotHit.style.bottom = `${carrotBottom}px`
     }
     this.toast.style.left = `${this.x}px`
-    this.toast.style.bottom = `${screenBottom + 148}px`
+    this.toast.style.bottom = `${screenBottom + 220}px`
   }
 
   private say(message: string, duration: number): void {
@@ -1185,14 +681,14 @@ class RabbitPet {
       if (saved) {
         this.x = clamp(saved.xRatio * innerWidth, 125, innerWidth - 125)
         this.targetX = this.x
-        this.hatOn = saved.hat !== false
+        this.quiet = saved.quiet === true
       }
     } catch { /* A corrupt preference should not prevent the pet from loading. */ }
   }
 
   private saveState(): void {
     try {
-      const value: SavedState = { xRatio: clamp(this.x / innerWidth, 0, 1), hat: this.hatOn }
+      const value: SavedState = { xRatio: clamp(this.x / innerWidth, 0, 1), quiet: this.quiet }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
     } catch { /* Storage can be disabled without affecting the current session. */ }
   }
@@ -1204,5 +700,5 @@ export function apply(ctx: ClientContext): void {
     document.getElementById('dsh-rabbit-pet-stage')?.remove()
     const pet = new RabbitPet()
     return () => pet.dispose()
-  }, 'rabbit-pet: articulated photoreal 2.5D desktop companion')
+  }, 'rabbit-pet: animated 2D desktop companion')
 }

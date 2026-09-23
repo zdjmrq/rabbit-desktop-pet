@@ -32,12 +32,17 @@ function visibleRect(selector: string): { x: number; y: number; width: number; h
   return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
 }
 
+let lastRegions = ''
+
 function syncInteractiveRegions(): void {
   const regions = [
     visibleRect('#dsh-rabbit-pet-hit'),
     visibleRect('#dsh-rabbit-pet-menu.open'),
     visibleRect('#dsh-rabbit-pet-carrot-hit.show'),
   ].filter((region): region is NonNullable<typeof region> => Boolean(region))
+  const signature = JSON.stringify([regions, pointerCaptured])
+  if (signature === lastRegions) return
+  lastRegions = signature
   window.desktopPet.setInteractiveRegions(regions, pointerCaptured)
 }
 

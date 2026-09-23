@@ -1,7 +1,7 @@
 {
   "name": "rabbit-desktop-pet",
-  "version": "1.1.0",
-  "description": "Photorealistic rabbit desktop pet for Windows and macOS",
+  "version": "2.0.0",
+  "description": "Animated 2D rabbit desktop pet for Windows",
   "homepage": "https://github.com/zdjmrq/rabbit-desktop-pet",
   "repository": {
     "type": "git",
@@ -15,14 +15,9 @@
     "check": "tsc --noEmit",
     "start": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke-test",
-    "dist": "npm run check && npm run build && electron-builder --win portable --x64",
-    "dist:mac": "npm run check && npm run build && electron-builder --mac zip --arm64 --publish never"
-  },
-  "dependencies": {
-    "three": "^0.179.1"
+    "dist": "npm run check && npm run build && electron-builder --win portable --x64"
   },
   "devDependencies": {
-    "@types/three": "^0.179.0",
     "electron": "42.9.0",
     "electron-builder": "^26.0.12",
     "tsdown": "^0.15.7",
@@ -33,24 +28,29 @@
     "productName": "写实小兔子桌宠",
     "artifactName": "RabbitDesktopPet-${version}-${os}-${arch}.${ext}",
     "asar": true,
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "main.cjs",
       "preload.cjs",
       "index.html",
       "dist/renderer.js",
-      "assets/rabbit-idle.png",
+      "assets/rabbit-idle-nohat.png",
+      "assets/rabbit-atlas.webp",
+      "assets/rabbit-extra.webp",
       "package.json"
     ],
-    "win": { "target": ["portable"] },
-    "portable": { "artifactName": "RabbitDesktopPet-${version}-portable.${ext}" },
-    "mac": {
-      "target": [{ "target": "zip", "arch": ["arm64"] }],
-      "artifactName": "RabbitDesktopPet-${version}-mac-${arch}.${ext}",
-      "category": "public.app-category.entertainment",
-      "icon": "build/RabbitDesktopPet.icns",
-      "identity": null,
-      "hardenedRuntime": false
-    }
-  }
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "assets/rabbit.ico"
+    },
+    "portable": {
+      "artifactName": "RabbitDesktopPet-${version}-portable.${ext}"
+    },
+    "electronDist": "node_modules/electron/dist"
+  },
+  "author": "zdjmrq"
 }

@@ -1,7 +1,10 @@
 const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell } = require('electron')
 const path = require('node:path')
+const fs = require('node:fs')
 
 const smokeTest = process.argv.includes('--smoke-test')
+const captureTest = process.argv.includes('--capture-test')
+const interactionTest = process.argv.includes('--interaction-test')
 const isMac = process.platform === 'darwin'
 let mainWindow = null
 let tray = null
@@ -12,6 +15,8 @@ let ignoringMouse = false
 let hitTestTimer = null
 let petInteractionEnabled = true
 
+// Keep development checks independent of the pet already running on the desktop.
+if (smokeTest) app.setPath('userData', path.join(app.getPath('temp'), 'rabbit-pet-smoke-profile'))
 if (!app.requestSingleInstanceLock()) app.quit()
 
 function syncWindowBounds() {
@@ -53,7 +58,7 @@ function updateMouseHitTest() {
 
 function createTray() {
   const traySize = isMac ? 20 : 32
-  const image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'rabbit-idle.png')).resize({ width: traySize, height: traySize })
+  const image = nativeImage.createFromPath(path.join(__dirname, 'assets', 'rabbit-idle-nohat.png')).resize({ width: traySize, height: traySize })
   tray = new Tray(image)
   tray.setToolTip('写实小兔子桌宠')
   const refreshMenu = () => {
@@ -98,7 +103,7 @@ function createWindow() {
   const { x, y, width, height } = screen.getPrimaryDisplay().workArea
   mainWindow = new BrowserWindow({
     x, y, width, height,
-    show: !smokeTest,
+    show: !smokeTest || captureTest,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -115,6 +120,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   })
   mainWindow.setAlwaysOnTop(true, 'screen-saver')
@@ -133,10 +139,63 @@ function createWindow() {
     const result = await mainWindow.webContents.executeJavaScript(`({
       stage: Boolean(document.getElementById('dsh-rabbit-pet-stage')),
       canvas: Boolean(document.querySelector('#dsh-rabbit-pet-stage canvas')),
+      spriteReady: document.querySelector('#dsh-rabbit-pet-stage canvas[data-sprite-ready]')?.dataset.spriteReady === 'true',
+      extraReady: document.querySelector('#dsh-rabbit-pet-stage canvas[data-extra-ready]')?.dataset.extraReady === 'true',
       rabbitHit: Boolean(document.getElementById('dsh-rabbit-pet-hit')),
       errors: document.getElementById('startup-error')?.textContent || ''
     })`)
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`)
+    if (captureTest) {
+      const region = await mainWindow.webContents.executeJavaScript(`(() => {
+        const rect = document.getElementById('dsh-rabbit-pet-hit').getBoundingClientRect()
+        return { x: Math.max(0, Math.floor(rect.x - 20)), y: Math.max(0, Math.floor(rect.y - 20)), width: Math.ceil(rect.width + 40), height: Math.ceil(rect.height + 40) }
+      })()`)
+      const png = (await mainWindow.webContents.capturePage(region)).toPNG()
+      const output = path.join(__dirname, 'art', 'qa', 'runtime.png')
+      fs.mkdirSync(path.dirname(output), { recursive: true })
+      fs.writeFileSync(output, png)
+      console.log(`CAPTURE_RESULT ${output}`)
+    }
+    if (interactionTest) {
+      const interaction = await mainWindow.webContents.executeJavaScript(`(() => {
+        const root = document.getElementById('dsh-rabbit-pet-stage')
+        const hit = document.getElementById('dsh-rabbit-pet-hit')
+        const menu = document.getElementById('dsh-rabbit-pet-menu')
+        const open = () => hit.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        open()
+        const menuOpened = menu.classList.contains('open')
+        menu.querySelector('[data-action="sleep"]').click()
+        const sleep = root.dataset.action
+        open()
+        menu.querySelector('[data-action="wake"]').click()
+        const wake = root.dataset.action
+        const initialQuiet = root.dataset.quiet
+        open()
+        menu.querySelector('[data-action="quiet"]').click()
+        const quietOn = root.dataset.quiet
+        const quietSaved = JSON.parse(localStorage.getItem('dsh-rabbit-pet:v1')).quiet
+        open()
+        menu.querySelector('[data-action="quiet"]').click()
+        const quietOff = root.dataset.quiet
+        const quietToggled = quietOn !== initialQuiet && quietSaved === (quietOn === 'true') && quietOff === initialQuiet
+        const hatRemoved = !menu.querySelector('[data-action="hat"]')
+        open()
+        menu.querySelector('[data-action="feed"]').click()
+        const carrot = document.getElementById('dsh-rabbit-pet-carrot').classList.contains('show')
+        return { menuOpened, sleep, wake, quietToggled, hatRemoved, carrot }
+      })()`)
+      console.log(`INTERACTION_RESULT ${JSON.stringify(interaction)}`)
+    }
+    if (captureTest && interactionTest) {
+      try {
+        await require('./scripts/runtime-check.cjs')(mainWindow)
+      } catch (error) {
+        console.error(error)
+        app.exit(1)
+        return
+      }
+    }
+    if (!result.spriteReady || !result.extraReady || result.errors) { app.exit(1); return }
     quitting = true
     app.quit()
   })
